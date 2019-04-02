@@ -1,0 +1,4 @@
+.idea/**
+*.pyc
+.aws-sam/**
+sam-app/**

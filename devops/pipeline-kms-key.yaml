@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a CMK in KMS and grants access to other accounts
+Parameters:
+  DevAccount:
+    Description: AWS AccountNumber for dev
+    Type: String
+    Default: 053575238526
+  TestAccount:
+    Description: AWS AccountNumber for test. Leave unspecifed if you are not having dedicated test account.
+    Type: String
+    Default: unspecifed
+  ProductionAccount:
+    Description: AWS AccountNumber for production
+    Type: String
+    Default: 647677418029
+Conditions:
+  IsTestAccountPresent:
+    Fn::Not:
+      - Fn::Equals:
+        - Ref: TestAccount
+        - 'unspecifed'
+Resources:
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Used by Assumed Roles in Dev/Test/Prod accounts to Encrypt/Decrypt code
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Ref AWS::StackName
+        Statement:
+          -
+            Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - "kms:Create*"
+              - "kms:Describe*"
+              - "kms:Enable*"
+              - "kms:List*"
+              - "kms:Put*"
+              - "kms:Update*"
+              - "kms:Revoke*"
+              - "kms:Disable*"
+              - "kms:Get*"
+              - "kms:Delete*"
+              - "kms:ScheduleKeyDeletion"
+              - "kms:CancelKeyDeletion"
+            Resource: "*"
+          -
+            Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${ProductionAccount}:root
+                - !Sub arn:aws:iam::${DevAccount}:root
+                - !If
+                  - IsTestAccountPresent
+                  - !Sub arn:aws:iam::${TestAccount}:root
+                  - !Ref AWS::NoValue
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/codepipeline-crossaccounts
+      TargetKeyId: !Ref KMSKey
+Outputs:
+  CMK:
+    Value: !GetAtt [KMSKey,Arn]
+  CMKAlias:
+    Value: !Ref KMSAlias

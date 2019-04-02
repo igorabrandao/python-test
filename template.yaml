@@ -1,0 +1,446 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Checkout API Deployment script using AWS Service Application Model (SAM)
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+    Environment:
+      Variables:
+        AppName: CHECKOUTAPI
+        PARAM_STORE_AIRBRAKE_API_KEY_CHECKOUTAPI: NA
+        PARAM_STORE_AIRBRAKE_PROJECT_ID_CHECKOUTAPI: NA
+        PARAM_STORE_PRESHARED_KEY: NA
+        TargetStage: !Ref targetStage
+        AllowTestTelcoCodes: !Ref testCodesAllowed
+        DEBUG: !Ref DEBUG
+# https://github.com/awslabs/serverless-application-model/issues/305
+# https://github.com/awslabs/serverless-application-model/issues/8
+
+Parameters:
+  artifactStoreBucket:
+    Description: S3 Bucket Name
+    Type: String
+    Default: athena-build-archive
+  apihost:
+    Description: The host we are going to be able to call
+    Type: String
+    Default: misc-aws-api-host
+  targetStage:
+    Description: Define stage to which Lambdas/API Gateways should be deployed.
+    Type: String
+    Default: dev
+    AllowedValues:
+      - prod
+      - dev
+      - staging
+    ConstraintDescription: Only stages dev, staging & prod are allowed
+  checkoutApiVersion:
+    Description: Version of the Checkout API (from git describe)
+    Type: String
+  apiKey:
+    Description: API Key ID that is generated from API Gateway Console
+    Type: String
+  paramStoreLayer:
+    Description: arn:aws:lambda:us-west-2:647677418029:layer:ProdPythonParamStore:2
+    Type: String
+    Default: arn:aws:lambda:us-west-2:647677418029:layer:ProdPythonParamStore:3
+  airbrakeLoggingLayer:
+    Description: ARN of the Python Parameter Store Layer
+    Type: String
+    Default: arn:aws:lambda:us-west-2:647677418029:layer:ProdPythonAirBrake:3
+  apsmLayer:
+    Description: ARN of the layer that holds the Athena Persistent State Manager Code
+    Type: String
+    Default: arn:aws:lambda:us-west-2:647677418029:layer:ProdPythonAPSM:12
+  keyId:
+    Description: KMS Key Id for the parameterstore. Not ARN.
+    Type: String
+  testCodesAllowed:
+    Description: whether or not we will allow test code.
+    Type: String
+  DEBUG:
+    Description: Whether to enable debug logging
+    Type: String
+    Default: False
+Conditions:
+  isProdSatck: !Equals [ !Ref targetStage, "prod" ]
+Resources:
+  TransactionTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        -
+          AttributeName: "uuid"
+          AttributeType: "S"
+        -
+          AttributeName: "save_utc"
+          AttributeType: "N"
+      KeySchema:
+        -
+          AttributeName: "uuid"
+          KeyType: "HASH"
+        -
+          AttributeName: "save_utc"
+          KeyType: "RANGE"
+      BillingMode: "PAY_PER_REQUEST"
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [isProdSatck, "true", "false"]
+  CFTDelayCustomResource:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 900
+      CodeUri: files/services/custom/
+      Handler: CFTDelayLambdaHandler.lambda_handler
+      Runtime: python2.7
+  ServerlessRestApi:
+    DependsOn:
+      - AboutAPIFunction
+      - PriceAPIFunction
+      - SendTelcoAuthAPIFunction
+      - VerifyTelcoAuthAPIFunction
+      - TransactionAPIFunction
+      - TransactionCompleteAPIFunction
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName:
+        Ref: targetStage
+      EndpointConfiguration: REGIONAL
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          MetricsEnabled: 'true'
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: files/swagger/api.yml
+  Delay:
+    Type: Custom::Delay
+    DependsOn: ServerlessRestApi
+    Properties:
+      ServiceToken:
+        Fn::Sub: ${CFTDelayCustomResource.Arn}
+      DelaySeconds: 10
+  UsagePlan:
+    DependsOn: Delay
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId:
+            Ref: ServerlessRestApi
+          Stage:
+            Ref: targetStage
+      Description:
+        Fn::Sub: "Checkout API ${targetStage} default usage plan"
+      UsagePlanName:
+        Fn::Sub: ${AWS::StackName}-UsagePlan
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId:
+        Ref: apiKey
+      KeyType: API_KEY
+      UsagePlanId:
+        Ref: UsagePlan
+  idpool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        -
+          ClientId:
+            Ref: idpWebClient
+          ProviderName:
+            Fn::GetAtt: idp.ProviderName
+          ServerSideTokenCheck: true
+  idp:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName:
+        Fn::Sub: ${AWS::StackName}-idp
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: false
+      Schema:
+        -
+          AttributeDataType: String
+          Mutable: true
+          Name: otp_info
+          Required: false
+  idpWebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: default
+      UserPoolId:
+        Ref: idp
+      ExplicitAuthFlows:
+        - ADMIN_NO_SRP_AUTH
+  AboutAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: files/services/lambdas/about
+      Handler: about_handler.about_handler
+      Runtime: python2.7
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+      Environment:
+        Variables:
+          CODE_VERSION:
+            Ref: checkoutApiVersion
+      Policies:
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - Statement:
+          - Action:
+            - ssm:GetParameters
+            Effect: Allow
+            Resource: "*"
+  AboutAPIFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${AboutAPIFunction.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  PriceAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: files/services/lambdas/price
+      Handler: pricequote_handler.handle_price_request
+      Runtime: python2.7
+      Policies:
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - Statement:
+          - Action:
+            - ssm:GetParameters
+            Effect: Allow
+            Resource: "*"
+  PriceAPIFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${PriceAPIFunction.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  SendTelcoAuthAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      CodeUri: files/services/lambdas/auth_phone_send
+      Handler: sendTelcoAuth.send
+      Runtime: python2.7
+      Environment:
+        Variables:
+          api_path: ops-alpha/telco/outbound
+          COGNITO_IDP_POOL_ID:
+            Ref: idp
+          COGNITO_IDP_POOL_CLIENT_ID:
+            Ref: idpWebClient
+          COGNITO_FEDERATED_IDP_POOL_ID:
+            Ref: idpool
+          TEMP_PASSWORD: DoNotLetMeDown!123
+      Policies:
+        - AmazonCognitoPowerUser
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - Statement:
+          - Action:
+            - ssm:GetParameters
+            Effect: Allow
+            Resource: "*"
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+  SendTelcoAuthAPIFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${SendTelcoAuthAPIFunction.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  GetUserByRef:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 1
+      CodeUri: files/services/lambdas/user
+      Handler: retrieval.get_by_ref
+      Runtime: python2.7
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+  GetUserFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${GetUserByRef.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  VerifyTelcoAuthAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: files/services/lambdas/auth_phone_verify
+      Handler: verifyTelcoAuth.verify
+      Runtime: python2.7
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+      Environment:
+        Variables:
+          MAX_VALIDITY: 300
+          COGNITO_IDP_POOL_ID:
+            Ref: idp
+          COGNITO_IDP_POOL_CLIENT_ID:
+            Ref: idpWebClient
+          COGNITO_FEDERATED_IDP_POOL_ID:
+            Ref: idpool
+          TEMP_PASSWORD: DoNotLetMeDown!123
+          AUTHORIZED_TEST_CODE: 1234;5678;9102;
+      Policies:
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - Statement:
+          - Action:
+            - ssm:GetParameters
+            Effect: Allow
+            Resource: "*"
+        - AmazonCognitoPowerUser
+  VerifyTelcoAuthAPIFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${VerifyTelcoAuthAPIFunction.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  TransactionAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      CodeUri: files/services/lambdas/transaction
+      Handler: transaction_events.create_transaction
+      Runtime: python2.7
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+        - Ref: apsmLayer
+      Environment:
+        Variables:
+          TRANSACTION_TABLE: !Ref TransactionTable
+      Policies:
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionTable
+        - Statement:
+          - Action:
+            - ssm:GetParameters
+            Effect: Allow
+            Resource: "*"
+  TransactionCompleteAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      CodeUri: files/services/lambdas/transaction
+      Handler: transaction_events.complete_transaction
+      Runtime: python2.7
+      Layers:
+        - Ref: paramStoreLayer
+        - Ref: airbrakeLoggingLayer
+        - Ref: apsmLayer
+      Environment:
+        Variables:
+          TRANSACTION_TABLE: !Ref TransactionTable
+      Policies:
+        - KMSDecryptPolicy:
+            KeyId: !Ref keyId
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TransactionTable
+        - Statement:
+            - Action:
+                - ssm:GetParameters
+              Effect: Allow
+              Resource: "*"
+  TransactionAPIFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::Sub: ${TransactionAPIFunction.Arn}
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub: "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ServerlessRestApi}/*"
+  checkoutAPIDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName:
+        Fn::Sub: ${targetStage}-checkout-api-dashboard
+      DashboardBody:
+        Fn::Sub: |
+          {
+              "widgets":[
+                  {
+                      "type":"metric",
+                      "x":0,
+                      "y":0,
+                      "width":12,
+                      "height":6,
+                      "properties":{
+                          "metrics":[
+                              [
+                                "AWS/ApiGateway", "Count", "ApiName", "CheckoutAPI", "Resource", "/about", "Stage", "${targetStage}", "Method", "GET"
+                              ],
+                              [
+                                "AWS/ApiGateway", "Count", "ApiName", "CheckoutAPI", "Resource", "/transaction/create", "Stage", "${targetStage}", "Method", "POST"
+                              ],
+                              [
+                                "AWS/ApiGateway", "Count", "ApiName", "CheckoutAPI", "Resource", "/authenticate/principal/by_phone", "Stage", "${targetStage}", "Method", "POST"
+                              ],
+                              [
+                                "AWS/ApiGateway", "Count", "ApiName", "CheckoutAPI", "Resource", "/authenticate/principal/verify_phone", "Stage", "${targetStage}", "Method", "POST"
+                              ],
+                              [
+                                "AWS/ApiGateway", "Count", "ApiName", "CheckoutAPI", "Resource", "/price", "Stage", "${targetStage}", "Method", "GET"
+                              ]
+                          ],
+                          "period":300,
+                          "stat":"Sum",
+                          "region":"${AWS::Region}",
+                          "title":"No of Requests to Checkout API"
+                      }
+                  }
+              ]
+          }
+Outputs:
+  AWSRegion:
+    Value: !Ref "AWS::Region"
+  AWSStackName:
+    Value: !Ref "AWS::StackName"
+  ApiURL:
+    Description: "API endpoint URL for Prod environment"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${targetStage}/"
+

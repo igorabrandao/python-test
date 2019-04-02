@@ -1,0 +1,15 @@
+Since the checkout-api pipleine deploy the stacks across accounts we need do the following setup before we create the pipline.
+
+1) In Prod Account: Create the KMS Key for codepipeline using pipeline-kms-key.yaml
+2) In Dev Account: Create the Cross Account deployment role using cross-account-deployer-role.yaml
+3) In prod Account Update CMKARN with the KMS Key Arn that is created in Step 1 and deploy the pipeline.
+
+
+1/28/2019:
+To deploy:
+aws cloudformation package --template-file pipeline.yaml --output-template-file packaged.yaml --s3-bucket athena-build-archive --profile athenabitcoin
+
+
+And then:
+aws cloudformation deploy --template-file .\packaged.yaml --stack-name checkout-api-pipeline-stack --profile athenabitcoin --capabilities CAPABILITY_IAM
+

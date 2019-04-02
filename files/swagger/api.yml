@@ -1,0 +1,503 @@
+---
+swagger: "2.0"
+info:
+  version: "1.0.0"
+  title: "CheckoutAPI"
+  contact:
+    name: Athena Bitcoin Inc. Technology
+    email: technology@athenabitcoin.com
+  termsOfService: https://checkout.athenabitcoin.com/ToS
+  license:
+    name: Athena Bitcoin, Inc. - Strictly Proprietary
+    url: https://athenabitco.in/SW-License
+  description: |
+    This API supports the "Athena Checkout" project.  We also leverage the  Athena Operations API in order to perform tasks we perform across multiple projects.
+host: ${apihost}
+basePath: "/"
+schemes:
+- "https"
+paths:
+  /transaction/complete:
+    post:
+      description: Completes a transactions and causes crypto currency to be sent
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: "header"
+          name: "x-api-key"
+          required: true
+          type: "string"
+        - in: "header"
+          name: "agent-terminal-id"
+          required: true
+          type: "string"
+          description: an ID for the machine
+        - in: body
+          description: Update the transaction with the amount that's been paid.
+          required: true
+          schema:
+            $ref: '#/definitions/TransactionDeposit'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/Transaction'
+        "400":
+          description: Error
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TransactionCompleteAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+        - api_key: []
+        - athenaUserPool: []
+  /transaction/create:
+    post:
+      description: Creates a new transaction
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: "header"
+          name: "x-api-key"
+          required: true
+          type: "string"
+        - in: "header"
+          name: "agent-terminal-id"
+          required: true
+          type: "string"
+          description: an ID for the machine
+        - in: body
+          description: transaction to create
+          required: true
+          schema:
+            $ref: '#/definitions/Transaction'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/Transaction'
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TransactionAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+        - api_key: []
+        - athenaUserPool: []
+  /user/by_reference:
+    get:
+      description: retrieves information about a user
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: "query"
+          type: string
+          name: customer_reference
+          required: true
+          description: A reference that identifies a customer
+      responses:
+        200:
+          description: OK
+          schema:
+            type: object
+            properties:
+              phone_e164:
+                type: string
+                description: customer's phone formatted in E.164
+              phone_display_formatted:
+                type: string
+                description: formatted according to the local display
+              customer_name:
+                type: string
+                description: the name of the customer we have on file
+              netverify_id_necessary:
+                type: boolean
+                description: Whether or not the customer should be promoted for netverify
+        400:
+          description: Bad Request
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: Helpful description of why we couldn't process the request
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUserByRef.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+        security:
+          - api_key: []
+
+  /authenticate/principal/by_phone:
+    post:
+      description: Authenticates a principal in a crypto currency transaction by phone
+      consumes:
+      - application/json
+      produces:
+      - "application/json"
+      parameters:
+        - in: "header"
+          name: "x-api-key"
+          required: true
+          type: "string"
+        - in: "header"
+          name: "agent-terminal-id"
+          required: true
+          type: "string"
+        - in: body
+          description: "Representation of a telco request"
+          name: TelcoRequest
+          required: true
+          schema:
+            $ref: '#/definitions/TelcoRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/TelcoConfirm'
+        504:
+          description: Unexpected delay processing
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SendTelcoAuthAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+        - api_key: []
+  /authenticate/principal/verify_phone:
+    post:
+      description: The endpoint used for the principal to provide a user back to us
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      parameters:
+        - in: "header"
+          name: "x-api-key"
+          required: true
+          type: "string"
+        - in: "header"
+          name: "agent-terminal-id"
+          required: true
+          type: "string"
+          description: an ID for the machine
+        - in: body
+          description: "Representation of a phone verification request"
+          name: TelcoVerificationRequest
+          required: true
+          schema:
+            $ref: '#/definitions/VerificationRequest'
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/CustomerVerifiedResponse'
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VerifyTelcoAuthAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+      - api_key: []
+  /price:
+    get:
+      description: Retrieve price quote for a crypto denominated in a given sovereign / fiat currency
+      produces:
+      - "application/json"
+      parameters:
+        - name: "x-api-key"
+          in: "header"
+          required: true
+          type: "string"
+        - in: "header"
+          name: "agent-terminal-id"
+          required: true
+          type: "string"
+          description: an ID for the machine requesting a price
+        - name: "sovereign"
+          in: "query"
+          type: "string"
+          required: false
+          description: |
+            The three character ISO 4217 currency code
+        - name: "crypto"
+          in: "query"
+          type: "string"
+          required: false
+          description: |
+            The three letter code for a crypto currency
+      responses:
+        "200":
+          description: "200 response"
+          schema:
+            $ref: "#/definitions/PriceResponse"
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PriceAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+      - api_key: []
+  /about:
+    get:
+      produces:
+      - "application/json"
+      parameters:
+      - name: "x-api-key"
+        in: "header"
+        required: true
+        type: "string"
+      responses:
+        "200":
+          description: "200 response"
+          schema:
+            $ref: "#/definitions/AboutResponse"
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AboutAPIFunction.Arn}/invocations
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "when_no_match"
+        httpMethod: "POST"
+        contentHandling: "CONVERT_TO_TEXT"
+        type: "aws_proxy"
+      security:
+      - api_key: []
+definitions:
+  AboutResponse:
+    type: "object"
+    title: "About the API"
+    properties:
+      message:
+        type: "string"
+      version:
+        type: "string"
+  SinglePriceQuote:
+    type: "object"
+    title: "Market Data Response"
+    properties:
+      deliveryCurrency:
+        type: string
+        description: |
+          The currency the user intends to buy.  This will
+          be a crypto currency.
+      paymentCurrency:
+        type: string
+        default: USD
+        description: |
+          The currency the user intends to pay in.
+      quotedPrice:
+        type: number
+        format: float
+        description: |
+          How many units of the paymentCurrency did the client see
+          it would required to receive one unit of the deliveryCurrency.
+          For instance, if one were buying BTC with USD, and the quoted
+          price were $13,302.22 this value should be 13302.22.  This is
+          is the price the customer sees, typically inclusive of fees.
+  PriceResponse:
+    type: "array"
+    title: "Market Data"
+    items:
+      $ref: "#/definitions/SinglePriceQuote"
+  TelcoConfirm:
+    type: object
+    properties:
+      request_id:
+        type: string
+        description: identified of the message
+      service:
+        type: string
+        description: the service used to send the message
+  TelcoRequest:
+    type: object
+    required:
+      - message
+      - phonenumber
+    properties:
+      phonenumber:
+        type: string
+        description: E.164 formatted telephone number
+      method:
+        type: string
+        description: 'the method we should use to contact: options are sms, call, whatsapp'
+        enum:
+          - sms
+          - whatsapp
+          - call
+        default: sms
+      cost:
+        type: number
+        format: float
+        description: >-
+          the cost, in USD (unless otherwise specified) of sending... or the
+          maximum we should pay
+        minimum: 0
+      language:
+        type: string
+        description: language code to use (ISO 639-1)
+        default: "en"
+  VerificationRequest:
+    type: object
+    required:
+      - code
+      - phonenumber
+    properties:
+      code:
+        type: string
+        description: the code sent to the user
+      phonenumber:
+        type: string
+        description: the phone number we are verifying
+  CustomerVerifiedResponse:
+    type: object
+    properties:
+      customer:
+        $ref: "#/definitions/CustomerRecord"
+      session_id:
+        type: string
+        description: |
+          A unique identified that maps a customer to an interaction with the system
+  CustomerRecord:
+    type: object
+    description: Representation of a customer
+    properties:
+      customer_id:
+        type: string
+        description: "GUID that uniquely identifies the customer"
+      authorized:
+        type: boolean
+        description: "Authorized to transact"
+      buy_limit:
+        type: number
+        format: float
+        description: The limit the user can purchase from Athena (in fiat/sovereign)
+      sell_limit:
+        type: number
+        format: float
+        description: The limit the user can sell to Athena (in fiat/sovereign)
+  TransactionList:
+    type: "array"
+    title: "Transaction List"
+    items:
+      $ref: "#/definitions/Transaction"
+  TransactionDeposit:
+    type: object
+    title: Describes a transaction deposit
+    properties:
+      amount_deposited:
+        type: number
+        description: The value of the currency the client has deposited
+      uuid:
+        type: string
+        description: The id of the order
+  Transaction:
+    type: object
+    title: Transaction
+    properties:
+      cryptoCurrency:
+        type: string
+        description: crypto
+        enum:
+          - BTC
+          - LTC
+          - BCH
+      sovereignCurrency:
+        type: string
+        description: fiat (provided in ISO 4217)
+        enum:
+          - USD
+          - MXN
+      amount:
+        type: number
+        format: float
+        description: the amount (you want, have paid for, authorized)
+      amount_deposited:
+        type: number
+        format: float
+        description: The amount of fiat the customer gave in a purchase transaction (required in Purchases)
+      rate:
+        type: number
+        format: float
+        description: The exchange rate, in units of fiat to crypto.
+      tx_state:
+        type: string
+        description: description of transaction state
+        enum:
+            - Init
+            - Paid
+            - Disbursed
+      side:
+        type: string
+        enum:
+          - Buy
+          - Sell
+      address:
+        type: string
+        description: The address at which the user would like to receive their crypto currency in a buy transaction
+      uuid:
+        type: string
+        description: Unique Identifier for the transaction
+securityDefinitions:
+  api_key:
+    type: "apiKey"
+    name: "x-api-key"
+    in: "header"
+  sigv4:
+    type: "apiKey"
+    name: "Authorization"
+    in: "header"
+    x-amazon-apigateway-authtype: "awsSigv4"
+  athenaUserPool:
+    type: apiKey
+    name: Authorization
+    in: header
+    x-amazon-apigateway-authtype: cognito_user_pools
+    x-amazon-apigateway-authorizer:
+      type: cognito_user_pools
+      providerARNs:
+      - Fn::Sub: arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${idp}
+x-amazon-apigateway-request-validators:
+  params-only:
+    validateRequestBody: false
+    validateRequestParameters: true
+x-amazon-apigateway-request-validator: params-only
